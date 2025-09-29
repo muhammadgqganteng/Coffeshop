@@ -7,7 +7,9 @@ use App\Models\OrderItem;
 use App\Models\Product;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 
 class OrderController extends Controller
 {
@@ -47,6 +49,45 @@ class OrderController extends Controller
     }
 
     /**
+     * Generate Midtrans snap token for payment.
+     */
+    private function generateSnapToken($orderId, $total)
+    {
+        \Midtrans\Config::$serverKey = config('midtrans.server_key');
+        \Midtrans\Config::$clientKey = config('midtrans.client_key');
+        \Midtrans\Config::$isProduction = config('midtrans.is_production');
+        \Midtrans\Config::$isSanitized = true;
+        \Midtrans\Config::$is3ds = true;
+
+        // Disable SSL verification for sandbox to avoid certificate issues
+        if (config('midtrans.is_sandbox')) {
+            \Midtrans\Config::$curlOptions = [
+                \CURLOPT_SSL_VERIFYPEER => false,
+                \CURLOPT_SSL_VERIFYHOST => false,
+            ];
+        }
+
+        $params = [
+            'transaction_details' => [
+                'order_id' => $orderId,
+                'gross_amount' => $total,
+            ],
+            'customer_details' => [
+                'first_name' => Auth::user()->name ?? 'Customer',
+                'email' => Auth::user()->email ?? 'customer@example.com',
+            ],
+        ];
+
+        try {
+            $snapToken = \Midtrans\Snap::getSnapToken($params);
+            return $snapToken;
+        } catch (\Exception $e) {
+            Log::error('Midtrans snap token generation error: ' . $e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
      * Store order from checkout.
      */
     public function store(Request $request)
@@ -55,6 +96,10 @@ class OrderController extends Controller
             'address' => 'required|string',
             'payment_method' => 'required|string',
         ]);
+
+        if (!Auth::check()) {
+            return redirect()->route('login')->with('error', 'Harap login terlebih dahulu.');
+        }
 
         $cart = session()->get('cart', []);
         if (empty($cart)) {
@@ -77,11 +122,12 @@ class OrderController extends Controller
             }
         }
 
-        DB::transaction(function () use ($total, $orderItems, $request) {
+        $order = null;
+        DB::transaction(function () use ($total, $orderItems, $request, &$order) {
             $order = Order::create([
-                'user_id' => auth()->id(),
+                'user_id' => Auth::id(),
                 'total' => $total,
-                'status' => 'pending',
+                'status' => 'pending', // Pending until payment success
             ]);
 
             foreach ($orderItems as $item) {
@@ -90,9 +136,31 @@ class OrderController extends Controller
             }
         });
 
+        // Generate Midtrans snap token
+        $snapToken = $this->generateSnapToken($order->id, $total);
+
         session()->forget('cart');
 
-        return redirect()->route('orders.index')->with('success', 'Order placed successfully.');
+        // Redirect to payment page with snap token
+        return redirect()->route('payment.process', ['snap_token' => $snapToken, 'order_id' => $order->id]);
+    }
+
+    /**
+     * Process payment with Midtrans snap.
+     */
+    public function processPayment(Request $request)
+    {
+        $snapToken = $request->query('snap_token');
+        $orderId = $request->query('order_id');
+
+        if (!$snapToken || !$orderId) {
+            return redirect()->route('orders.index')->with('error', 'Invalid payment session.');
+        }
+
+        $order = Order::findOrFail($orderId);
+        $this->authorize('view', $order); // Ensure user owns the order
+
+        return view('payment.process', compact('snapToken', 'order'));
     }
 
     /**
@@ -120,7 +188,7 @@ class OrderController extends Controller
     public function updateStatus(Request $request, Order $order)
     {
         $request->validate([
-            'status' => 'required|in:pending,confirmed,shipped,delivered',
+            'status' => 'required|in:pending,confirmed,shipped,delivered,cancelled',
         ]);
 
         $order->update(['status' => $request->status]);

@@ -4,6 +4,7 @@ use App\Http\Controllers\CartController;
 use App\Http\Controllers\CategoryController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\OrderController;
+use App\Http\Controllers\PaymentController;
 use App\Http\Controllers\ProductController;
 use App\Http\Controllers\ProfileController;
 use Illuminate\Support\Facades\Route;
@@ -40,7 +41,13 @@ Route::middleware('auth')->group(function () {
     Route::get('/orders/create', [OrderController::class, 'create'])->name('orders.create');
     Route::post('/orders', [OrderController::class, 'store'])->name('orders.store');
     Route::get('/orders/{order}', [OrderController::class, 'show'])->name('orders.show');
+
+    // Payment
+    Route::get('/payment/process', [OrderController::class, 'processPayment'])->name('payment.process');
 });
+
+// Payment webhook (no auth required)
+Route::match(['get', 'post'], '/payment/notification', [PaymentController::class, 'handleNotification'])->name('payment.notification');
 
 // Admin routes
 Route::prefix('admin')->middleware('admin')->name('admin.')->group(function () {

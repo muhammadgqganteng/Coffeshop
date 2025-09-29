@@ -6,6 +6,7 @@ use App\Models\Order;
 use App\Models\Product;
 use App\Models\User;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 
 class DashboardController extends Controller
 {
@@ -20,10 +21,21 @@ class DashboardController extends Controller
 
     private function adminDashboard()
     {
-        $totalProducts = Product::count();
-        $totalOrders = Order::count();
-        $totalUsers = User::where('role', 'user')->count();
-        $totalRevenue = Order::where('status', 'delivered')->sum('total');
+        $totalProducts = Cache::remember('total_products', 3600, function () {
+            return Product::count();
+        });
+
+        $totalOrders = Cache::remember('total_orders', 3600, function () {
+            return Order::count();
+        });
+
+        $totalUsers = Cache::remember('total_users', 3600, function () {
+            return User::where('role', 'user')->count();
+        });
+
+        $totalRevenue = Cache::remember('total_revenue', 3600, function () {
+            return Order::whereIn('status', ['confirmed', 'delivered'])->sum('total');
+        });
 
         $recentOrders = Order::with('user')->latest()->take(5)->get();
 
